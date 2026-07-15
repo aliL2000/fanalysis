@@ -1,0 +1,49 @@
+name: Daily Risk Pipeline
+
+# Runs every weekday at 9:30pm UTC (after US market close ~4pm ET / 9pm UTC,
+# with a buffer for yfinance data to settle). Also runnable manually.
+on:
+  schedule:
+    - cron: '30 21 * * 1-5'
+  workflow_dispatch: {}
+
+jobs:
+  update-pipeline:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # needed so the workflow can commit updated charts back to the repo
+
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Pull latest prices (incremental)
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: python ingest_watchlist_yfinance.py
+
+      - name: Recompute risk metrics (SQL)
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          psql "$DATABASE_URL" -f sql/schema.sql
+          psql "$DATABASE_URL" -f sql/risk_metrics_query.sql > sql_output.txt
+
+      - name: Generate daily snapshot + regenerate visuals
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: python scripts/daily_snapshot.py
+
+      - name: Commit updated charts and snapshot
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "Automated daily update: prices, metrics, and charts"
+          file_pattern: 'visuals/*.png SNAPSHOT.md data_summary.csv anomaly_history.csv'
